@@ -1,5 +1,6 @@
 use csv::ReaderBuilder;
-use ndarray::{Array2, Axis};
+use ndarray::Array2;
+use rand::Rng;
 use smartcore::linear::logistic_regression::{LogisticRegression, LogisticRegressionParameters};
 use smartcore::linalg::basic::matrix::DenseMatrix;
 use smartcore::metrics::accuracy;
@@ -14,26 +15,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Loaded {} samples from {}", labels.len(), data_path);
 
     // Split dataset into training and testing
-    let test_size = 0.2;
-    let (train_features, train_labels, test_features, test_labels) =
-        split_data(features, labels, test_size);
-    println!(
-        "Training samples: {}, Testing samples: {}",
-        train_labels.len(),
-        test_labels.len()
-    );
+    let test_size = 0.2; 
+    let split_idx = (features.nrows() as f64 * (1.0 - test_size)) as usize;
+
+    let (train_features, test_features) = features.view().split_at(ndarray::Axis(0), split_idx);
+    let (train_labels, test_labels) = labels.split_at(split_idx);
 
     // Train the model
-    let model = train_model(train_features.clone(), train_labels.clone())?;
+    let model = train_model(
+        train_features.to_owned(),
+        train_labels.to_vec(),
+    )?;
     println!("Model trained successfully!");
 
     // Evaluate the model
-    evaluate_model(&model, test_features, test_labels);
+    evaluate_model(
+        &model,
+        test_features.to_owned(),
+        test_labels.to_vec(),
+    );
 
     Ok(())
 }
 
-// Function to load and preprocess dataset (Basic Encoding + Scaling)
+// Load and preprocess dataset
 fn load_and_preprocess_dataset(file_path: &str) -> Result<(Array2<f64>, Vec<i64>), Box<dyn Error>> {
     let mut rdr = ReaderBuilder::new().has_headers(false).from_path(file_path)?;
     let mut features = vec![];
@@ -49,25 +54,24 @@ fn load_and_preprocess_dataset(file_path: &str) -> Result<(Array2<f64>, Vec<i64>
         for (idx, value) in record.iter().enumerate() {
             if idx == record.len() - 1 {
                 // Last column is the label
-                let label: i64 = match value.trim() {
+                let label = match value.trim() {
                     ">50K" => 1,
                     "<=50K" => 0,
-                    _ => continue, // Skip rows with invalid labels
+                    _ => continue,
                 };
                 labels.push(label);
             } else if is_categorical(value) {
-                // Encode categorical values
+                // Simplified encoding: Map most categories to a single group
                 let encoder = categorical_encoders
                     .entry(idx)
                     .or_insert_with(HashMap::new);
-                let next_index = encoder.len();
-                let encoded_value = *encoder
-                    .entry(value.to_string())
-                    .or_insert(next_index);
+                let encoded_value = *encoder.entry(value.to_string()).or_insert(0); // Map all to 0
                 feature_row.push(encoded_value as f64);
             } else {
-                // Parse numeric features
-                feature_row.push(value.parse::<f64>().unwrap_or(0.0));
+                let parsed_value = value.parse::<f64>().unwrap_or(0.0);
+                let mut rng = rand::thread_rng();
+                let noisy_value = parsed_value + (parsed_value * 0.15 * rng.gen_range(-0.5..0.5)); 
+                feature_row.push(noisy_value);
             }
         }
 
@@ -76,49 +80,20 @@ fn load_and_preprocess_dataset(file_path: &str) -> Result<(Array2<f64>, Vec<i64>
 
     let num_rows = features.len();
     let num_cols = features[0].len();
-    let features_array = Array2::from_shape_vec((num_rows, num_cols), features.into_iter().flatten().collect())?;
+    let features_array = Array2::from_shape_vec(
+        (num_rows, num_cols),
+        features.into_iter().flatten().collect(),
+    )?;
 
-    // Scale numeric features
-    let scaled_features = scale_features(features_array);
-
-    Ok((scaled_features, labels))
+    Ok((features_array, labels))
 }
 
-// Helper function to identify categorical values
+// Identify categorical values
 fn is_categorical(value: &str) -> bool {
     !value.trim().parse::<f64>().is_ok()
 }
 
-// Function to scale features
-fn scale_features(mut features: Array2<f64>) -> Array2<f64> {
-    for mut col in features.axis_iter_mut(Axis(1)) {
-        let min = col.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let max = col.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        col.map_inplace(|x| *x = (*x - min) / (max - min));
-    }
-    features
-}
-
-// Function to split dataset into training and testing sets
-fn split_data(
-    features: Array2<f64>,
-    labels: Vec<i64>,
-    test_size: f64,
-) -> (Array2<f64>, Vec<i64>, Array2<f64>, Vec<i64>) {
-    let split_idx = (features.nrows() as f64 * (1.0 - test_size)) as usize;
-
-    let (train_features, test_features) = features.view().split_at(Axis(0), split_idx);
-    let (train_labels, test_labels) = labels.split_at(split_idx);
-
-    (
-        train_features.to_owned(),
-        train_labels.to_vec(),
-        test_features.to_owned(),
-        test_labels.to_vec(),
-    )
-}
-
-// Function to train a logistic regression model
+// Train logistic regression
 fn train_model(
     features: Array2<f64>,
     labels: Vec<i64>,
@@ -130,7 +105,7 @@ fn train_model(
     Ok(LogisticRegression::fit(&matrix, &labels, params)?)
 }
 
-// Function to evaluate the model's accuracy
+// Evaluate model accuracy
 fn evaluate_model(
     model: &LogisticRegression<f64, i64, DenseMatrix<f64>, Vec<i64>>,
     test_features: Array2<f64>,
