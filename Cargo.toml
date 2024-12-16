@@ -1,0 +1,11 @@
+[package]
+name = "fraud_detection"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ndarray = "0.15"
+ndarray-stats = "0.4"
+csv = "1.1"
+smartcore = "0.3"
+
